@@ -34,6 +34,7 @@ agent_state = {
     "confirmed_wumpus": set(), # hasil deduksi: kotak pasti wumpus
     "path_history": [],        # stack untuk backtrack & jalan pulang
     "has_gold": False,
+    "has_arrow": True,
     "wumpus_alive": True,
     "finish": False,
     "game_over": False,
@@ -59,7 +60,6 @@ def get_neighbors(position):
 
 
 def infer(state):
-
     changed = True
     while changed:
         changed = False
@@ -103,7 +103,13 @@ def step_agent(state):
 
     curr_pos = tuple(state["position"])
 
+    # Mati jika masuk kotak Wumpus yang masih hidup atau kotak Pit
     if state["wumpus_alive"] and curr_pos == WUMPUS:
+        print(f"[MATI] Agen dimakan Wumpus di {curr_pos}")
+        state["game_over"] = True
+        return
+    if curr_pos in PITS:
+        print(f"[MATI] Agen jatuh ke pit di {curr_pos}")
         state["game_over"] = True
         return
 
@@ -139,6 +145,17 @@ def step_agent(state):
         "breeze": curr_block_has_breeze,
     }
     infer(state)
+
+    # 5b. Panah: tembak jika salah satu tetangga adalah confirmed wumpus
+    if state["has_arrow"] and state["wumpus_alive"]:
+        for n in get_neighbors(curr_pos):
+            if n in state["confirmed_wumpus"]:
+                state["has_arrow"] = False
+                state["wumpus_alive"] = False
+                state["confirmed_wumpus"].discard(n)
+                state["not_wumpus"].add(n)
+                print(f"[PANAH] Menembak Wumpus di {n} dari {curr_pos}. Wumpus mati.")
+                break
 
     # 6. Hitung Safe Tiles & Tentukan Pergerakan
     safe_tiles = state["not_pit"].intersection(state["not_wumpus"])
