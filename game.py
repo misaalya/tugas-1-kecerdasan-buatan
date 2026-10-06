@@ -12,11 +12,12 @@ pygame.display.set_caption("Agent Grid")
 
 font_emoji = pygame.font.SysFont("notocoloremoji", 18)
 font_text = pygame.font.SysFont("arial", 18)
+font_label = pygame.font.SysFont("arial", 22, bold=True)
 
-# world objects
+# world objects (row, col), row 0 di atas
 WUMPUS = (1, 0)
 PITS = [
-    (0, 3), 
+    (0, 3),
     (1, 2),
     (3, 2),
 ]
@@ -26,19 +27,19 @@ agent_state = {
     "position": [3, 0],
     "step": 1,
     "visited": set(),
-    "not_pit": set(),
-    "not_wumpus": set(),
-    "possibly_wumpus": {},  # Melacak frekuensi kecurigaan Wumpus
-    "path_history": [],     # Stack untuk backtrack & jalan pulang
+    "percepts": {},            # {(r, c): {"stench": bool, "breeze": bool}}  -> fakta di KB
+    "not_pit": set(),          # hasil deduksi: kotak pasti bukan pit
+    "not_wumpus": set(),       # hasil deduksi: kotak pasti bukan wumpus
+    "confirmed_pit": set(),    # hasil deduksi: kotak pasti pit
+    "confirmed_wumpus": set(), # hasil deduksi: kotak pasti wumpus
+    "path_history": [],        # stack untuk backtrack & jalan pulang
     "has_gold": False,
-    "has_arrow": True,
     "wumpus_alive": True,
-    "wumpus_pos_deduced": None,
     "finish": False,
     "game_over": False,
 }
 
-# Timer untuk pergerakan otomatis agent (tiap 500ms / 0.5 detik)
+# Timer untuk pergerakan otomatis agent (tiap 500ms)
 MOVE_EVENT = pygame.USEREVENT + 1
 pygame.time.set_timer(MOVE_EVENT, 500)
 
@@ -56,22 +57,57 @@ def get_neighbors(position):
 
     return neighbors
 
+
+def infer(state):
+
+    changed = True
+    while changed:
+        changed = False
+
+        for pos, p in state["percepts"].items():
+            nbrs = get_neighbors(pos)
+
+            # --- aturan arah ¬percept -> tetangga aman ---
+            if not p["stench"]:
+                for n in nbrs:
+                    if n not in state["not_wumpus"]:
+                        state["not_wumpus"].add(n)
+                        changed = True
+
+            if not p["breeze"]:
+                for n in nbrs:
+                    if n not in state["not_pit"]:
+                        state["not_pit"].add(n)
+                        changed = True
+
+            # --- aturan arah percept -> salah satu tetangga berbahaya ---
+            if p["stench"] and state["wumpus_alive"]:
+                cand = [n for n in nbrs if n not in state["not_wumpus"]]
+                if len(cand) == 1 and cand[0] not in state["confirmed_wumpus"]:
+                    state["confirmed_wumpus"].add(cand[0])
+                    print(f"[INFERENSI] Wumpus terkonfirmasi di {cand[0]} (dari stench di {pos})")
+                    changed = True
+
+            if p["breeze"]:
+                cand = [n for n in nbrs if n not in state["not_pit"]]
+                if len(cand) == 1 and cand[0] not in state["confirmed_pit"]:
+                    state["confirmed_pit"].add(cand[0])
+                    print(f"[INFERENSI] Pit terkonfirmasi di {cand[0]} (dari breeze di {pos})")
+                    changed = True
+
+
 def step_agent(state):
-
-    print('visited:')
-    print(state['visited'])
-
     # Hentikan jika sudah tamat (kalah ataupun menang)
     if state["game_over"] or state["finish"]:
         return
 
     curr_pos = tuple(state["position"])
-    
+
     if state["wumpus_alive"] and curr_pos == WUMPUS:
         state["game_over"] = True
         return
 
-    # 1. Tandai posisi saat ini sebagai pasti aman
+    # 1. Tandai posisi saat ini sebagai pasti aman (agen hidup di sini)
     state["visited"].add(curr_pos)
     state["not_pit"].add(curr_pos)
     state["not_wumpus"].add(curr_pos)
@@ -86,49 +122,34 @@ def step_agent(state):
             state["finish"] = True  # Berhasil pulang membawa emas (SUCCESS)
             return
         if state["path_history"]:
-            print(state['path_history'])
             prev_pos = state["path_history"].pop()
             state["position"][0], state["position"][1] = prev_pos
         return
     else:
         print(f"langkah ke-{state['step']}")
         state["step"] += 1
-         
-    # 4. Scan Percepts Tetangga
-    neighbors = get_neighbors(curr_pos)
 
-    # Cek Stench
+    # 4. Terima percept dari lingkungan (sensor)
     curr_block_has_stench = state["wumpus_alive"] and (curr_pos in get_neighbors(WUMPUS))
-    if not curr_block_has_stench and state["wumpus_alive"]:
-        for n in neighbors:
-            state["not_wumpus"].add(n)
-    elif curr_block_has_stench and state["wumpus_alive"]:
-        # Catat frekuensi kemunculan kecurigaan Stench (Greedy)
-        for n in neighbors:
-            if n not in state["not_wumpus"] and n not in state["visited"]:
-                state["possibly_wumpus"][n] = state["possibly_wumpus"].get(n, 0) + 1
+    curr_block_has_breeze = any(curr_pos in get_neighbors(pit) for pit in PITS)
 
-    # Cek Breeze
-    curr_block_has_breeze = False
-    for pit in PITS:
-        pit_neighbours = get_neighbors(pit)
-        if curr_pos in pit_neighbours:
-            curr_block_has_breeze = True
-            break 
-    if not curr_block_has_breeze:
-        for n in neighbors:
-            state["not_pit"].add(n)
-
+    # 5. Simpan percept sebagai fakta KB, lalu jalankan inferensi atas seluruh KB
+    state["percepts"][curr_pos] = {
+        "stench": curr_block_has_stench,
+        "breeze": curr_block_has_breeze,
+    }
+    infer(state)
 
     # 6. Hitung Safe Tiles & Tentukan Pergerakan
     safe_tiles = state["not_pit"].intersection(state["not_wumpus"])
+    safe_tiles -= state["confirmed_pit"]
+    safe_tiles -= state["confirmed_wumpus"]
+    neighbors = get_neighbors(curr_pos)
     unvisited_safe = [n for n in neighbors if n in safe_tiles and n not in state["visited"]]
 
     if unvisited_safe:
         next_pos = unvisited_safe[0]
         state["path_history"].append(curr_pos)
-        print('path history:')
-        print(state['path_history'])
         state["position"][0], state["position"][1] = next_pos
     else:
         # Backtrack jika buntu
@@ -137,6 +158,15 @@ def step_agent(state):
             state["position"][0], state["position"][1] = prev_pos
         else:
             state["game_over"] = True  # Benar-benar buntu (FAILED)
+
+
+def draw_confirmed_marker(pos, color, label):
+    row, col = pos
+    x = col * CELL_SIZE
+    y = row * CELL_SIZE
+    pygame.draw.rect(screen, color, (x + 4, y + 4, CELL_SIZE - 8, CELL_SIZE - 8), 4)
+    text = font_label.render(label, True, color)
+    screen.blit(text, (x + 10, y + 8))
 
 
 running = True
@@ -172,8 +202,8 @@ while running:
             x = pit_col * CELL_SIZE
             y = pit_row * CELL_SIZE
             text = font_text.render("~~", True, "black")
-            screen.blit(text, text.get_rect(center=(x + CELL_SIZE // 2, y + CELL_SIZE // 3)))                        
-                        
+            screen.blit(text, text.get_rect(center=(x + CELL_SIZE // 2, y + CELL_SIZE // 3)))
+
     # 4. Gambar gold (hanya jika belum diambil)
     if not agent_state["has_gold"]:
         x = GOLD[1] * CELL_SIZE
@@ -181,7 +211,7 @@ while running:
         text_gold = font_emoji.render("💰", True, "black")
         text = pygame.transform.scale(text_gold, (30, 30))
         screen.blit(text, text.get_rect(center=(x + CELL_SIZE // 2, y + ((CELL_SIZE // 2) + 30))))
-                        
+
     # 5. Gambar pit
     for pit in PITS:
         x = pit[1] * CELL_SIZE
@@ -193,16 +223,20 @@ while running:
     if agent_state["wumpus_alive"]:
         x = WUMPUS[1] * CELL_SIZE
         y = WUMPUS[0] * CELL_SIZE
-        icon = "🗣️" if not agent_state['wumpus_alive'] else '💀'
         text = font_emoji.render("💀", True, "black")
         screen.blit(text, text.get_rect(center=(x + CELL_SIZE // 2, y + CELL_SIZE // 2)))
 
-    # 7. Gambar Agent
+    # 7. Tandai hasil deduksi agen (kotak yang SUDAH terbukti lewat inferensi)
+    for pos in agent_state["confirmed_wumpus"]:
+        draw_confirmed_marker(pos, "red", "W")
+    for pos in agent_state["confirmed_pit"]:
+        draw_confirmed_marker(pos, "orange", "P")
+
+    # 8. Gambar Agent
     current_agent_row, current_agent_col = agent_state["position"]
     x = current_agent_col * CELL_SIZE
     y = current_agent_row * CELL_SIZE
 
-    # Prioritas Ikon: Kalah -> Menang -> Bawa Emas -> Biasa
     if agent_state["game_over"]:
         agent_icon = "💀"
     else:
