@@ -38,6 +38,7 @@ agent_state = {
     "wumpus_alive": True,
     "finish": False,
     "game_over": False,
+    "next_pos": None
 }
 
 # Timer untuk pergerakan otomatis agent (tiap 500ms)
@@ -97,9 +98,15 @@ def infer(state):
 
 
 def step_agent(state):
+    print(f"current position: {state['position']}")
     # Hentikan jika sudah tamat (kalah ataupun menang)
     if state["game_over"] or state["finish"]:
         return
+        
+    if state["next_pos"] is not None:
+            state["position"] = list(state["next_pos"])
+            state["next_pos"] = None
+            return
 
     curr_pos = tuple(state["position"])
 
@@ -129,7 +136,7 @@ def step_agent(state):
             return
         if state["path_history"]:
             prev_pos = state["path_history"].pop()
-            state["position"][0], state["position"][1] = prev_pos
+            state["next_pos"] = prev_pos
         return
     else:
         print(f"langkah ke-{state['step']}")
@@ -167,12 +174,12 @@ def step_agent(state):
     if unvisited_safe:
         next_pos = unvisited_safe[0]
         state["path_history"].append(curr_pos)
-        state["position"][0], state["position"][1] = next_pos
+        state['next_pos'] = next_pos
     else:
         # Backtrack jika buntu
         if state["path_history"]:
             prev_pos = state["path_history"].pop()
-            state["position"][0], state["position"][1] = prev_pos
+            state["next_pos"] = prev_pos
         else:
             state["game_over"] = True  # Benar-benar buntu (FAILED)
 
